@@ -1,0 +1,6 @@
+# VCS 日志、缓存与波形；手册和源代码保留。
+sim/build*/
+*.vpd
+*.fsdb
+*.vcd
+__pycache__/
