@@ -7,13 +7,15 @@
 //         factory 创建。wrapper 不创建第二个 adapter，避免重复 driver/credit。
 // 生命周期: interface/config 在 time-0 创建并持续到仿真结束；顶层应在 #0 后
 //           调用唯一的 run_test()，使 config_db 在 UVM build_phase 前可见。
-// 说明: intel_pcie_bind_core 负责解析网络和配置发布；对外仅保留
-//       intel_pcie_bind_wrapper_inout。DUT 用户侧端口必须是 wire/tri net。
+// 说明: 唯一入口 intel_pcie_bind_wrapper_inout 直接暴露 cfg/u_intel_pcie_if；
+//       DUT 用户侧端口必须是 wire/tri net，SIDE 在 elaboration 时确定方向。
 // =============================================================================
 `include "intel_pcie_params.svh"
 
-module intel_pcie_bind_core #(
-    // ADAPTER_NAME 只用于配置对象命名和诊断；不创建同名 UVM component。
+// 单层 wrapper 同时完成引脚映射和配置发布，避免为唯一 inout 入口重复转接端口。
+module intel_pcie_bind_wrapper_inout #(
+    // ADAPTER_NAME 仅为旧调用兼容保留，通常省略；只影响 cfg 对象名称，
+    // 不创建或定位 UVM component，接入路径由 ADAPTER_PATH 决定。
     parameter string ADAPTER_NAME = "",
     // 必须与待连接的 pcie_tl_env adapter 实例路径一致，例如
     // 默认单 RC 环境实际创建名为 rc_adapter_0；单 EP 环境实际创建名为
@@ -89,6 +91,8 @@ module intel_pcie_bind_core #(
     localparam bit IS_APPLICATION = (SIDE == "APPLICATION");
 
     intel_pcie_if #(DATA_WIDTH, SEGMENTS) u_intel_pcie_if(clk, rst_n);
+    // 在顶层 #0 后、run_test 前可调整 cfg 的行为字段；不能修改 cfg.side，
+    // 因为实际网络方向已由 SIDE 参数固定。adapter build_phase 会再次校验配置。
     intel_pcie_adapter_config cfg;
     string resolved_name;
 
@@ -229,104 +233,4 @@ module intel_pcie_bind_core #(
         uvm_config_db#(intel_pcie_vif_t)::set(null, ADAPTER_PATH, "vif", u_intel_pcie_if);
         uvm_config_db#(intel_pcie_adapter_config)::set(null, ADAPTER_PATH, "intel_cfg", cfg);
     end
-endmodule
-
-// =============================================================================
-// 参数化的 wire/inout 入口。
-//
-// 当 DUT 的用户侧端口本身是 wire/tri 网络时，可直接使用这个入口，只通过
-// SIDE 选择 HARD_IP 或 APPLICATION 的所有权。端口方向在编译语法上仍固定为
-// inout；SIDE 只决定 generate 中哪一组连续赋值生效。inout actual 必须是
-// wire/tri net，不能直接连接 logic variable。
-// =============================================================================
-module intel_pcie_bind_wrapper_inout #(
-    parameter string ADAPTER_NAME = "",
-    parameter string ADAPTER_PATH = "uvm_test_top.env.rc_adapter_0",
-    parameter string SIDE = "HARD_IP",
-    localparam int DATA_WIDTH = `INTEL_PCIE_DATA_WIDTH,
-    localparam int SEGMENTS = `INTEL_PCIE_SEGMENTS,
-    localparam int DATA_PARITY_WORDS = DATA_WIDTH / 32
-) (
-    input wire clk,
-    input wire rst_n,
-    inout wire [SEGMENTS-1:0][DATA_WIDTH-1:0] rx_data,
-    inout wire [SEGMENTS-1:0][127:0] rx_hdr,
-    inout wire [SEGMENTS-1:0][31:0] rx_prefix,
-    inout wire [SEGMENTS-1:0] rx_sop,
-    inout wire [SEGMENTS-1:0] rx_eop,
-    inout wire [SEGMENTS-1:0] rx_dvalid,
-    inout wire [SEGMENTS-1:0] rx_hvalid,
-    inout wire [SEGMENTS-1:0] rx_pvalid,
-    inout wire [SEGMENTS-1:0][2:0] rx_empty,
-    inout wire [SEGMENTS-1:0][2:0] rx_bar,
-    inout wire [SEGMENTS-1:0][2:0] rx_pfnum,
-    inout wire [SEGMENTS-1:0] rx_vfactive,
-    inout wire [SEGMENTS-1:0][10:0] rx_vfnum,
-    inout wire [SEGMENTS-1:0][DATA_PARITY_WORDS-1:0] rx_data_par,
-    inout wire [SEGMENTS-1:0][3:0] rx_hdr_par,
-    inout wire [SEGMENTS-1:0] rx_prefix_par,
-    inout wire [SEGMENTS-1:0][DATA_WIDTH-1:0] tx_data,
-    inout wire [SEGMENTS-1:0][127:0] tx_hdr,
-    inout wire [SEGMENTS-1:0][31:0] tx_prefix,
-    inout wire [SEGMENTS-1:0] tx_sop,
-    inout wire [SEGMENTS-1:0] tx_eop,
-    inout wire [SEGMENTS-1:0] tx_dvalid,
-    inout wire [SEGMENTS-1:0] tx_hvalid,
-    inout wire [SEGMENTS-1:0] tx_pvalid,
-    inout wire [SEGMENTS-1:0][DATA_PARITY_WORDS-1:0] tx_data_par,
-    inout wire [SEGMENTS-1:0][3:0] tx_hdr_par,
-    inout wire [SEGMENTS-1:0] tx_prefix_par,
-    inout wire rx_ready,
-    inout wire tx_ready,
-    inout wire [2:0] rx_hcrdt_init,
-    inout wire [2:0] rx_hcrdt_init_ack,
-    inout wire [2:0] rx_hcrdt_update,
-    inout wire [5:0] rx_hcrdt_update_cnt,
-    inout wire [2:0] rx_dcrdt_init,
-    inout wire [2:0] rx_dcrdt_init_ack,
-    inout wire [2:0] rx_dcrdt_update,
-    inout wire [11:0] rx_dcrdt_update_cnt,
-    inout wire [2:0] tx_hcrdt_init,
-    inout wire [2:0] tx_hcrdt_init_ack,
-    inout wire [2:0] tx_hcrdt_update,
-    inout wire [5:0] tx_hcrdt_update_cnt,
-    inout wire [2:0] tx_dcrdt_init,
-    inout wire [2:0] tx_dcrdt_init_ack,
-    inout wire [2:0] tx_dcrdt_update,
-    inout wire [11:0] tx_dcrdt_update_cnt
-);
-    intel_pcie_bind_core #(
-        .ADAPTER_NAME(ADAPTER_NAME),
-        .ADAPTER_PATH(ADAPTER_PATH),
-        .SIDE(SIDE)
-    ) u_core (
-        .clk(clk), .rst_n(rst_n),
-        .rx_data(rx_data), .rx_hdr(rx_hdr), .rx_prefix(rx_prefix),
-        .rx_sop(rx_sop), .rx_eop(rx_eop), .rx_dvalid(rx_dvalid),
-        .rx_hvalid(rx_hvalid), .rx_pvalid(rx_pvalid), .rx_empty(rx_empty),
-        .rx_bar(rx_bar), .rx_pfnum(rx_pfnum), .rx_vfactive(rx_vfactive),
-        .rx_vfnum(rx_vfnum), .rx_data_par(rx_data_par),
-        .rx_hdr_par(rx_hdr_par), .rx_prefix_par(rx_prefix_par),
-        .tx_data(tx_data), .tx_hdr(tx_hdr), .tx_prefix(tx_prefix),
-        .tx_sop(tx_sop), .tx_eop(tx_eop), .tx_dvalid(tx_dvalid),
-        .tx_hvalid(tx_hvalid), .tx_pvalid(tx_pvalid),
-        .tx_data_par(tx_data_par), .tx_hdr_par(tx_hdr_par),
-        .tx_prefix_par(tx_prefix_par), .rx_ready(rx_ready),
-        .tx_ready(tx_ready), .rx_hcrdt_init(rx_hcrdt_init),
-        .rx_hcrdt_init_ack(rx_hcrdt_init_ack),
-        .rx_hcrdt_update(rx_hcrdt_update),
-        .rx_hcrdt_update_cnt(rx_hcrdt_update_cnt),
-        .rx_dcrdt_init(rx_dcrdt_init),
-        .rx_dcrdt_init_ack(rx_dcrdt_init_ack),
-        .rx_dcrdt_update(rx_dcrdt_update),
-        .rx_dcrdt_update_cnt(rx_dcrdt_update_cnt),
-        .tx_hcrdt_init(tx_hcrdt_init),
-        .tx_hcrdt_init_ack(tx_hcrdt_init_ack),
-        .tx_hcrdt_update(tx_hcrdt_update),
-        .tx_hcrdt_update_cnt(tx_hcrdt_update_cnt),
-        .tx_dcrdt_init(tx_dcrdt_init),
-        .tx_dcrdt_init_ack(tx_dcrdt_init_ack),
-        .tx_dcrdt_update(tx_dcrdt_update),
-        .tx_dcrdt_update_cnt(tx_dcrdt_update_cnt)
-    );
 endmodule

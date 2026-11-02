@@ -17,4 +17,5 @@ package intel_pcie_adapter_pkg;
     `include "codec/intel_pcie_reassembler.sv"
     `include "adapter/intel_pcie_credit_manager.sv"
     `include "adapter/intel_pcie_if_adapter.sv"
+    `include "adapter/intel_pcie_env_setup.sv"
 endpackage

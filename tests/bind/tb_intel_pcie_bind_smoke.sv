@@ -78,31 +78,35 @@ module intel_pcie_bind_target_hard;
   assign rx_hcrdt_update_cnt = 'h1; assign rx_dcrdt_init = 'h1;
   assign rx_dcrdt_update = 'h1; assign rx_dcrdt_update_cnt = 'h1;
   assign tx_hcrdt_init_ack = 'h1; assign tx_dcrdt_init_ack = 'h1;
-  // 延后一拍等待 wrapper 的 time-0 initial 完成，然后检查配置句柄和网络解析结果。
+  // #0 等待 wrapper 完成同步发布；检查扁平 cfg 句柄与旧名称参数兼容，
+  // 再等待一拍使连续赋值稳定后检查网络方向。
   initial begin
-        intel_pcie_vif_t got_vif;
-        intel_pcie_adapter_config got_cfg;
+    intel_pcie_vif_t got_vif;
+    intel_pcie_adapter_config got_cfg;
+    #0;
+    if (!uvm_config_db#(intel_pcie_vif_t)::get(null,
+        "uvm_test_top.env.hard_adapter", "vif", got_vif) ||
+        !uvm_config_db#(intel_pcie_adapter_config)::get(null,
+        "uvm_test_top.env.hard_adapter", "intel_cfg", got_cfg))
+        $fatal(1, "hard config_db publication failed");
+    if (u_bind.cfg.side != INTEL_PCIE_HARD_IP ||
+        got_cfg != u_bind.cfg)
+        $fatal(1, "hard side not published");
+    u_bind.cfg.check_parity = 1;
+    if (!got_cfg.check_parity)
+        $fatal(1, "direct cfg must be the published object");
     #1;
-        if (!uvm_config_db#(intel_pcie_vif_t)::get(null,
-            "uvm_test_top.env.hard_adapter", "vif", got_vif) ||
-            !uvm_config_db#(intel_pcie_adapter_config)::get(null,
-            "uvm_test_top.env.hard_adapter", "intel_cfg", got_cfg))
-            $fatal(1, "hard config_db publication failed");
-        if (u_bind.u_core.cfg.side != INTEL_PCIE_HARD_IP ||
-            got_cfg != u_bind.u_core.cfg)
-            $fatal(1, "hard side not published");
-        if (u_bind.u_core.u_intel_pcie_if.tx_data !== tx_data ||
-            u_bind.u_core.u_intel_pcie_if.rx_ready !== rx_ready)
-            $fatal(1, "hard input mapping failed");
-        u_bind.u_core.u_intel_pcie_if.tx_ready = 1'b1;
-        #1;
-        if (tx_ready !== 1'b1) $fatal(1, "hard output mapping failed");
+    if (u_bind.u_intel_pcie_if.tx_data !== tx_data ||
+        u_bind.u_intel_pcie_if.rx_ready !== rx_ready)
+        $fatal(1, "hard input mapping failed");
+    u_bind.u_intel_pcie_if.tx_ready = 1'b1;
+    #1;
+    if (tx_ready !== 1'b1) $fatal(1, "hard output mapping failed");
     $display("[PCIE_BIND_SMOKE_PASS] hard ");
   end
 endmodule
 
 bind intel_pcie_bind_target_hard intel_pcie_bind_wrapper_inout #(
-  .ADAPTER_NAME("hard_adapter"),
   .ADAPTER_PATH("uvm_test_top.env.hard_adapter"),
   .SIDE("HARD_IP")
 ) u_bind (.*);
@@ -176,23 +180,26 @@ module intel_pcie_bind_target_application;
   assign tx_dcrdt_update = 'h0; assign tx_dcrdt_update_cnt = 'h0;
   // APPLICATION 的检查同时确认 wrapper 驱动 TX 数据和 RX ready，未拥有信号保持 DUT 值。
   initial begin
-        intel_pcie_vif_t got_vif;
-        intel_pcie_adapter_config got_cfg;
+    intel_pcie_vif_t got_vif;
+    intel_pcie_adapter_config got_cfg;
+    #0;
+    if (!uvm_config_db#(intel_pcie_vif_t)::get(null,
+        "uvm_test_top.env.application_adapter", "vif", got_vif) ||
+        !uvm_config_db#(intel_pcie_adapter_config)::get(null,
+        "uvm_test_top.env.application_adapter", "intel_cfg", got_cfg))
+        $fatal(1, "application config_db publication failed");
+    if (u_bind.cfg.side != INTEL_PCIE_APPLICATION ||
+        got_cfg != u_bind.cfg)
+        $fatal(1, "application side not published");
+    if (got_cfg.get_name() != "application_adapter_cfg")
+        $fatal(1, "legacy ADAPTER_NAME must still name cfg");
     #1;
-        if (!uvm_config_db#(intel_pcie_vif_t)::get(null,
-            "uvm_test_top.env.application_adapter", "vif", got_vif) ||
-            !uvm_config_db#(intel_pcie_adapter_config)::get(null,
-            "uvm_test_top.env.application_adapter", "intel_cfg", got_cfg))
-            $fatal(1, "application config_db publication failed");
-        if (u_bind.u_core.cfg.side != INTEL_PCIE_APPLICATION ||
-            got_cfg != u_bind.u_core.cfg)
-            $fatal(1, "application side not published");
-        u_bind.u_core.u_intel_pcie_if.tx_data = 'h5678;
-        u_bind.u_core.u_intel_pcie_if.rx_ready = 1'b1;
-        #1;
-        if (tx_data !== 'h5678 ||
-            u_bind.u_core.u_intel_pcie_if.tx_ready !== tx_ready)
-            $fatal(1, "application direction mapping failed");
+    u_bind.u_intel_pcie_if.tx_data = 'h5678;
+    u_bind.u_intel_pcie_if.rx_ready = 1'b1;
+    #1;
+    if (tx_data !== 'h5678 ||
+        u_bind.u_intel_pcie_if.tx_ready !== tx_ready)
+        $fatal(1, "application direction mapping failed");
     $display("[PCIE_BIND_SMOKE_PASS] application ");
   end
 endmodule

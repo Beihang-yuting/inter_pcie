@@ -1,5 +1,50 @@
 # VCS 验证记录
 
+## 2026-11-02：bind 简化与统一环境入口
+
+本轮在 `10.11.10.53` 使用 VCS W-2024.09-SP1 / UVM 1.2 验证单层
+`intel_pcie_bind_wrapper_inout` 和 `intel_pcie_configure_env`。5.6 模型执行仿真和
+日志判定，Astra 完成源码、日志及配置作用域的最终审查。
+
+| 验证组 | 几何或场景 | 次数 | 结果 |
+| --- | --- | --- | --- |
+| bind smoke | 4×256、2×256、1×256、2×128、1×128；每组均检查两个 SIDE | 5 | PASS |
+| 完整 bind env | 上述五种几何，各运行双向 137B 非对齐写读 | 5 | PASS |
+| 完整 bind env 压力/边界 | 4×256，128 个写后读 case / 双方向 256B 页尾边界 | 2 | PASS |
+| 原有接法兼容 | `tb_intel_pcie` 的默认 12 项功能、ready、credit、reset、env 回归 | 12 | PASS |
+
+共 24 个运行场景、11 次独立编译通过。编译的 `Warning-[...]`、Error、Fatal 均为 0；
+19 次 UVM 场景的 WARNING/ERROR/FATAL 均为 0。5 次 smoke 不启动 UVM test，以两个
+SIDE 的完成标记和仿真正常结束判定成功。VCS 仍有常规的 `Ports coerced to inout`
+Notice。并发测试通过 128 个 case、16768 字节，逐字节读回及前后保护区检查无误。
+
+新增完整 bind 顶层使用两个独立 interface，经两个 wrapper 和解析型 wire 网络连接，
+保持 AVST credit 开启，并在 `#0` 后通过直接 `cfg` 句柄打开 parity 检查。它验证的是
+双 BFM 接线，不含真实 DUT 或 Quartus 硬核。env 测试还在目标 env 之外实例化公共
+adapter，确认新的 factory instance override 没有影响该对象。
+
+静态审查确认合并前后 47 个端口声明及 90 条 assign 完全一致；wrapper 从 332 行减至
+236 行。原 `u_bind.u_core.cfg` 层次改为 `u_bind.cfg`，旧 `ADAPTER_NAME` 参数兼容性和
+time-0 配置发布由 smoke 覆盖。
+
+原始日志见 [`bind_simplify_20261102/results/`](../sim/build/logs/bind_simplify_20261102/results/)，
+逐项汇总见 [validation_summary.txt](../sim/build/logs/bind_simplify_20261102/validation_summary.txt)。
+受测源码清单见 [source.sha256](../sim/build/logs/bind_simplify_20261102/source.sha256)，
+29 个文件已与当前工作区及测试后重算的[远端实际源码清单](../sim/build/logs/bind_simplify_20261102/tested_remote_source.sha256)
+逐文件核对一致。该清单文件的 SHA-256 为
+`471ebe0c333fc8c5a8a6de735feaa88d691ca5a2e6d885260650a2749577d5bb`。
+
+本轮依赖使用本地 `pcie_work/pcie_tl_vip/src` 和 `host_mem/src` 的独立远端副本。
+初始检查发现远端已有 `host_mem` 与本地不同，因此没有使用该候选版本判定结果。
+本次本地依赖清单分别为 [pcie_work](../sim/build/logs/bind_simplify_20261102/local_pcie_tl_src.sha256)
+和 [host_mem](../sim/build/logs/bind_simplify_20261102/local_host_mem_src.sha256)；不能仅以历史
+Git 提交号代替这些实际源码快照。测试后重算的远端实际依赖清单分别为
+[pcie_work（75 文件）](../sim/build/logs/bind_simplify_20261102/tested_remote_pcie_tl_src.sha256) 和
+[host_mem（4 文件）](../sim/build/logs/bind_simplify_20261102/tested_remote_host_mem_src.sha256)，
+均与本地逐文件一致。完整 bind env 的复现命令见[接入说明](integration/bind.md)。
+
+## 2026-10-30：初始适配器与深度流量回归
+
 验证日期：2026-10-30。所有编译与仿真在用户指定的 `10.11.10.53`、用户 `ubuntu` 下执行，通过 `bash -lic` 加载 `.bashrc` 中的工具与license配置。Astra负责实现/修复/审查，GPT-5.6-sol负责VCS执行、日志分析和结果判定。
 
 工具为 VCS **W-2024.09-SP1**（build 2024-12-03），UVM 1.2，测试seed=1。外部依赖版本见[README](../README.md)。测试使用两BFM经真实interface引脚连接，没有TLM数据回环或自发自收旁路；env测试的业务响应仍由公共协议模型完成。

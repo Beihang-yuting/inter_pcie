@@ -25,15 +25,16 @@ PCIe协议的RC/EP角色和用户侧接口的source/sink角色不同，必须分
 
 在创建env之前设置factory和配置，基本写法如下。`tests/intel_pcie_env_test.sv` 是可执行的完整示例。
 
+入口来自 `intel_pcie_adapter_pkg`，须在 `pcie_tl_env::type_id::create("env", this)`
+之前调用。第三个参数可指定其他 env 名字；factory 替换仅作用于目标 env 子树，
+不改变其他环境。它不选择 RC/EP、创建内存或关闭 scoreboard。
+
 每个adapter使用独立的 `intel_pcie_adapter_config` 对象，构建后不再修改方向/容量。不要把同一个AUTO配置句柄通过通配路径同时分给两侧：build会把AUTO解析为该实例的实际方向。
 
 ```systemverilog
-pcie_tl_if_adapter::type_id::set_type_override(intel_pcie_if_adapter::get_type());
-
-// 公共协议层继续管理Tag、Completion、内存；AVST信用由adapter自己管理。
-env_cfg.if_mode = SV_IF_MODE;
-env_cfg.infinite_credit = 1;
-uvm_config_db#(pcie_tl_env_config)::set(this, "env", "cfg", env_cfg);
+// env_cfg 为已创建、已选择协议角色和内存的 pcie_tl_env_config。
+// 统一配置当前 env 的 factory、SV_IF_MODE、公共无限 FC 和外部引脚 bridge。
+intel_pcie_configure_env(this, env_cfg);
 
 intel_cfg.side = INTEL_PCIE_HARD_IP;
 uvm_config_db#(intel_pcie_adapter_config)::set(
@@ -55,12 +56,8 @@ uvm_config_db#(intel_pcie_adapter_config)::set(
 
 ## 复用requester/responder
 
-当前 `pcie_work` 的SV接口模式需要显式开启已有的transport bridge，让monitor接收到的请求/Completion转交公共driver：
-
-```systemverilog
-uvm_config_db#(bit)::set(this, "env", "pcie_svt_bridge_required", 1);
-```
-
+当前 `pcie_work` 的SV接口模式需要已有的transport bridge，让monitor接收到的请求/Completion转交公共driver。
+`intel_pcie_configure_env` 已为指定 env 设置 `pcie_svt_bridge_required=1`，无需重复填写。
 此hook虽因历史原因带 `svt` 名称，此处不依赖SVT VIP。它复用公共responder、Tag回收、Completion通知和统一内存，不在Intel仓库复制一套响应器。
 
 打开 `use_unified_mem` 后还必须注入实际manager。当前上游版本不会自动创建Host/Device内存；例如在test中持有两个独立 `host_mem_manager`，并在env创建前执行：
