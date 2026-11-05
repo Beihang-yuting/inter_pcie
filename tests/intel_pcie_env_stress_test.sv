@@ -3,6 +3,7 @@
 class intel_pcie_env_stress_test extends intel_pcie_env_test;
     `uvm_component_utils(intel_pcie_env_stress_test)
 
+    // 标准构造；共用基类的 SCB 和引脚环境，不另开观察流。
     function new(string name="intel_pcie_env_stress_test", uvm_component parent=null);
         super.new(name,parent);
     endfunction
@@ -89,6 +90,8 @@ class intel_pcie_env_stress_test extends intel_pcie_env_test;
         end
         if (success_cases != 128)
             `uvm_error("STRESS_COUNT", $sformatf("passed=%0d expected=128",success_cases));
+        #20ns;
+        check_scb_counts(256, 128);
         `uvm_info("RTILE_TEST_PASS", $sformatf("cases=%0d bytes=%0d",success_cases,success_bytes), UVM_LOW)
         phase.drop_objection(this);
     endtask
@@ -97,13 +100,20 @@ endclass
 // 最大合法包及 4KiB 边界专项保持独立，便于单独运行和定位边界问题。
 class intel_pcie_env_max_boundary_test extends intel_pcie_env_stress_test;
     `uvm_component_utils(intel_pcie_env_max_boundary_test)
+    // 构造页尾专项；沿用基类的内存所有权和 SCB 检查。
     function new(string name="intel_pcie_env_max_boundary_test", uvm_component parent=null); super.new(name,parent); endfunction
     // 只执行两个 256B 页尾读写；请求恰好结束在 4KiB 边界，属于合法流量。
     task run_phase(uvm_phase phase);
-        bit passed0, passed1;
+        bit	passed0;
+        bit	passed1;
         phase.raise_objection(this); fork
             do_case(0,256,1,passed0); do_case(1,256,1,passed1);
-        join `uvm_info("MAX_BOUNDARY", "256-byte exact-4KiB-boundary cases completed", UVM_LOW)
+        join
+        if (!passed0 || !passed1)
+            `uvm_fatal("MAX_BOUNDARY", "both directions must pass readback and guard checks")
+        #20ns;
+        check_scb_counts(4, 2, 8);
+        `uvm_info("RTILE_TEST_PASS", "256-byte exact-4KiB-boundary cases and SCB matched", UVM_LOW)
         phase.drop_objection(this);
     endtask
 endclass

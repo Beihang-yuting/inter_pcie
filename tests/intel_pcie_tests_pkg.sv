@@ -14,4 +14,5 @@ package intel_pcie_tests_pkg;
     `include "intel_pcie_credit_edges_test.sv"
     `include "intel_pcie_env_test.sv"
     `include "intel_pcie_env_stress_test.sv"
+    `include "intel_pcie_env_split_test.sv"
 endpackage

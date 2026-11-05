@@ -68,9 +68,10 @@ Git 提交号代替这些实际源码快照。测试后重算的远端实际依�
 | `intel_pcie_data_credit_test` | 两方向Header充足而Data不足；另测RX剩31credit、下包需1credit仍被32门槛阻塞 |
 | `intel_pcie_credit_init_test` | 等ACK后公告容量、分拍增量、两个空拍、六类有限/无限独立、运行期零增量不变成无限 |
 | `intel_pcie_reset_test` | TX半包暂停时复位，恰好一次send中止报告，信用重初始化且无旧包重放 |
-| `intel_pcie_env_test` | 实际factory替换pcie_tl_env，复用rw_seq双向非对齐137B写读、Completion/Tag/内存路径 |
+| `intel_pcie_env_test` | 实际factory替换pcie_tl_env，复用rw_seq双向非对齐137B写读；开启SCB，精确检查4请求/6分片/2匹配及空pending |
 | `intel_pcie_env_stress_test` | 4个并发worker、双方向共128个1～256B页内写后读case；逐字节golden、前后64B guard、Tag/Completion/统一内存路径 |
 | `intel_pcie_env_max_boundary_test` | 双方向256B最大合法包，地址放在页尾并恰好结束于4KiB边界 |
+| `intel_pcie_env_split_test` | 两个独立env各持RC或EP；经bind运行相同Tag/不同Requester的双向137B读写，两SCB均检查4请求/6分片/2匹配及空pending |
 
 ## 执行记录
 
@@ -100,6 +101,75 @@ Git 提交号代替这些实际源码快照。测试后重算的远端实际依�
 
 此前诊断轮次保留在 `sim/build/logs/run2/`、`run3/`：先修复测试helper的SV ref参数方向继承问题；随后默认数据通路8项通过，新增Data/初始化两项也通过。env最初在time 0因未绑定Host manager失败，已改为显式绑定Host/Device manager。这些诊断日志不代替最终快照回归结果。
 
+## 2026-11-05：bridge SCB 请求登记修复
+
+先在 4×256 bind 链路复现：SCB 关闭时 137B 双向读回通过；开启后，driver 能匹配
+Completion，但 SCB pending 为空，出现 3 次 `Unexpected Completion`。临时补登记后
+异常消失；独立 Header golden 的两种 DWORD 顺序及 Tag 高两位四种组合共 8 项通过。
+诊断证据保留在 [scb-probe-20261105.md](validation/scb-probe-20261105.md)。
+
+正式修复位于 `pcie_work` 公共 driver/env/scoreboard：发送前同步预登记，使用
+`{Requester ID, Tag}` 键并保存请求快照，单侧环境补足缺失的发送观察，双 BFM 不重复
+计数。原 TLM 通路保留迟到 RX 不重新登记已完成事务的行为。
+
+在 `10.11.10.53` 用冻结源码、VCS W-2024.09-SP1、seed=1 执行首轮 10 项，均通过，
+每项 UVM_WARNING/ERROR/FATAL 都为 0：
+
+| 场景 | SCB 请求 / Completion 分片 / 完整匹配 | 额外判据 |
+| --- | --- | --- |
+| Intel bind env | 4 / 6 / 2 | 双向 137B 非对齐逐字节读回 |
+| Intel bind stress | 256 / 324 / 128 | 128 组写读，16768B，保护区未变 |
+| Intel bind boundary | 4 / 8 / 2 | 双向 256B 页尾请求 |
+| Intel 独立单 RC/单 EP env | 每个 SCB 4 / 6 / 2 | 相同 Tag、不同 Requester；各自无对端 monitor |
+| Intel codec | — | Header/Payload golden 检查 |
+| 公共 bridge SCB unit | 4 / 6 / 4 | 相同 Tag 交错分片、对象快照、期望状态保留、Tag 重用 |
+| 公共 TLM smoke_mem | 2 / 1 / 1 | 原 TLM 回环 |
+| 公共 TLM cpl_split | 13 / 57 / 13 | 多片响应与 Tag 回收 |
+| 公共 virtio_fix_unit | — | 原状态/无数据响应/BE 回归 |
+| 公共 virtio_fix_order | — | 原 FIFO 顺序回归 |
+
+Intel env/stress/boundary/split 均显式检查 pending 与分片跟踪表清空，并要求
+unexpected/mismatched/timed_out 为 0。首轮 split 仅验证结果 Tag 相等。完整日志在
+[SCB 首轮结果](validation/scb-fix-20261105.md#round1-结果)。
+
+首轮四个顶层编译成功。公共 TL 编译包含 6 条 TMBIN/KUAI warning，运行阶段的 UVM
+告警计数仍均为 0；告警来自未修改的 multi_root_stress/multipair_heavy 测试文件。
+编译 warning 与 UVM warning 分开统计，不宣称整轮编译无告警。
+
+第二轮仅补强 split 测试：两端完成 write 后经 barrier 同步发起 read，并采样断言
+两个 SCB 都曾同时保留两条 pending。独立重编 `tb_intel_pcie_bind_split_env` 后通过：
+`tag=000 requester_ids=0100/0200 overlap_seen=1`，两个 SCB 各 4 请求 / 6 分片 /
+2 匹配，所有异常计数为 0，pending/tracker 清空，UVM_WARNING/ERROR/FATAL 为 0。
+两轮合计 10 项场景、11 次运行通过；第二轮源码只改变 split 测试及 fixture 两文件，
+公共产品代码与首轮一致，其余首轮结果仍适用。
+
+完整结果、命令、各轮 143 个输入文件的 SHA-256 清单见
+[scb-fix-20261105.md](validation/scb-fix-20261105.md)。
+验证结束后再次核对本地源码与最终远端快照一致；用户实际 DUT 未参与本轮仿真。
+
+## 2026-11-05：TLP 错误注入默认 soft 0
+
+公共 `pcie_tl_tlp` 的 `inject_ecrc_err`、`inject_lcrc_err`、`inject_poisoned`、
+`violate_ordering`、`field_bitmask` 和 `ep_bit` 改为各自独立、无条件的 soft 0。
+LEGAL/ILLEGAL/CORNER 三种模式都适用；显式 inline 约束可覆盖单项，其余项仍为 0。
+默认模式原有的 `soft constraint_mode_sel == CONSTRAINT_LEGAL` 保留。
+
+在 `10.11.10.53` 冻结 144 个输入文件并编译公共 TL / Intel bind 两套镜像，执行
+6 次运行全部通过，UVM_WARNING/ERROR/FATAL 均为 0：
+
+- `pcie_tl_injection_defaults_unit_test`：seed 1/2/3 各 338 次精确检查，共 1014 次；
+  覆盖普通随机化、Memory/Completion 派生类、默认及显式模式、单项覆盖后恢复，
+  并实际启动生产 Poisoned/Malformed sequence 检查注入意图。
+- `pcie_tl_virtio_fix_unit_test`：原有错误物化和 SCB 负例契约通过，两个预期错误
+  由精确 report catcher 捕获并断言计数。
+- `intel_pcie_env_test`：双向 137B 读写通过，SCB 4 请求 / 6 分片 / 2 匹配。
+- `intel_pcie_env_stress_test`：128 组写读、16768B 通过，SCB 256 请求 / 324 分片 /
+  128 匹配，异常计数为 0，pending/tracker 清空。
+
+公共编译的 6 条 warning 来自本次未修改的 multi_root/multipair 测试文件；bind
+编译无 warning/error。远端 SHA-256 与最终本地源码一致，完整证据见
+[tlp-soft-defaults-20261105.md](validation/tlp-soft-defaults-20261105.md)。
+
 ## 复现
 
 在指定主机、依赖路径正确且VCS环境已加载的shell中：
@@ -119,4 +189,4 @@ DATA_WIDTH=128 SEGMENTS=2 BUILD_DIR="$PWD/sim/build_128x2" \
 
 这些是定向功能与时序回归，不是随机覆盖率收敛或板级验证。没有接入实际Quartus硬核，也未验证LTSSM、PHY/DLLP、真实硬核Tag allocation、ID重写、动态信用重协商、多端口混合几何或SR-IOV完整枚举。深度测试覆盖的是公共 `pcie_tl_rw_seq` 在默认MPS下的并发合法包；4096B跨4KiB的非法请求没有作为正常通过项。x16 single-width配置开关目前没有独立回归；Header little模式有codec golden验证，默认端到端流量使用big模式。
 
-协议负例只覆盖明确列出的错误条件，不宣称穷尽全部非法组合。上层scoreboard的TLM pending注册在env测试中关闭，使用rw_seq完成状态与逐字节读回比较作为判据。
+协议负例只覆盖明确列出的错误条件，不宣称穷尽全部非法组合。早期记录中的 env 测试关闭公共 SCB，仅检查 rw_seq 状态与逐字节读回；2026-11-05 bridge SCB 修复后的测试打开 SCB 并额外检查精确计数和跟踪表清空，不能把早期结果当作 SCB 开启的验证证据。同一 switch root 混合真实 DUT/BFM EP 的观察选择、Host/Device 同地址的数据参考隔离不在本次修复范围。

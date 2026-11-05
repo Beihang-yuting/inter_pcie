@@ -1,12 +1,13 @@
 // tests：真实复用 pcie_tl_env、双向 requester/responder、统一内存与 rw_seq 的集成回归。
-// 依赖 pcie_work 当前 main 的外部 transport bridge hook；不重新实现 Tag/Completion。
+// 依赖 pcie_work 的外部 transport bridge 和发送前 SCB 登记；不重新实现 Tag/Completion。
 // test 拥有 env 和两侧独立 memory manager，env 只持有注入句柄并初始化；
 // 每次分配在读回完成后释放，manager 存活到整个测试结束。
 class intel_pcie_env_test extends uvm_test;
     `uvm_component_utils(intel_pcie_env_test)
 
-    pcie_tl_env env;
-    host_mem_manager host_manager, device_manager;
+    pcie_tl_env	          env;
+    host_mem_manager	  host_manager;
+    host_mem_manager	  device_manager;
 
     // 标准 UVM 构造，全部上下文由 env 在 build/connect 时建立。
     function new(string name = "intel_pcie_env_test", uvm_component parent = null);
@@ -16,16 +17,16 @@ class intel_pcie_env_test extends uvm_test;
     // 业务层只配置协议角色和内存；统一入口负责当前 env 的 adapter 替换与引脚传输。
     // Host/Device manager 必须成功注入，否则 env 在 build 时拒绝缺少后备存储的配置。
     function void build_phase(uvm_phase phase);
-        pcie_tl_env_config c;
-        pcie_tl_if_adapter unrelated_adapter;
-        string why;
+        pcie_tl_env_config	c;
+        pcie_tl_if_adapter	unrelated_adapter;
+        string	            why;
         super.build_phase(phase);
         c = pcie_tl_env_config::type_id::create("cfg");
         c.rc_agent_enable = 1;
         c.ep_agent_enable = 1;
         c.ep_auto_response = 1;
         c.use_unified_mem = 1;
-        c.scb_enable = 0;
+        c.scb_enable = 1;
         c.cpl_timeout_ns = 100000;
 
         // upstream 要求显式注入独立 Host/Device manager；只打开 use_unified_mem
@@ -50,9 +51,10 @@ class intel_pcie_env_test extends uvm_test;
     // RC->EP、EP->Host 都先 WRITE 再 READ，检查真实部分字节 BE 的端到端结果。
     // Completion 经过 opposite adapter 返回公共 driver，才能释放 Tag 并完成 rw_seq。
     task run_phase(uvm_phase phase);
-        pcie_tl_rw_seq wr, rd;
-        bit [63:0] address;
-        int length_bytes = 137;
+        pcie_tl_rw_seq	wr;
+        pcie_tl_rw_seq	rd;
+        bit [63:0]	    address;
+        int	          length_bytes = 137;
 
         phase.raise_objection(this);
         for (int side = 0; side < 2; side++) begin
@@ -83,7 +85,40 @@ class intel_pcie_env_test extends uvm_test;
             if (side == 0) env.dev_mem[0].free(address);
             else env.host_mem.free(address);
         end
-        `uvm_info("RTILE_TEST_PASS", "pcie_work env/rw_seq: bidirectional 137-byte unaligned write/read matched",UVM_LOW)
+        // monitor 与 requester 的完成处理可能同拍结束；让所有观察回调先排空。
+        #20ns;
+        check_scb_counts(4, 2, 6);
+        `uvm_info("RTILE_TEST_PASS", "pcie_work env/rw_seq: bidirectional 137-byte unaligned write/read and SCB matched",UVM_LOW)
         phase.drop_objection(this);
     endtask
+
+    // 核对业务期望数量，防止 TX 预登记和 RX monitor 被重复计数。
+    // expected_completions=-1 适用于随机地址导致分片数变化的压力场景。
+    function void check_scb_counts(int expected_requests, int expected_matched,
+                                   int expected_completions = -1);
+        if (env.scb == null)
+            `uvm_fatal("ENV_SCB", "scoreboard must be enabled")
+        if (env.scb.total_requests != expected_requests ||
+            env.scb.matched != expected_matched ||
+            (expected_completions >= 0 &&
+             env.scb.total_completions != expected_completions))
+            `uvm_error("ENV_SCB_COUNT", $sformatf(
+                "requests=%0d/%0d matched=%0d/%0d completions=%0d/%0d",
+                env.scb.total_requests, expected_requests, env.scb.matched,
+                expected_matched, env.scb.total_completions, expected_completions))
+    endfunction
+
+    // 所有派生压力测试都必须排空 pending 和分片表；读回成功不能代替 SCB 清账。
+    function void check_phase(uvm_phase phase);
+        super.check_phase(phase);
+        if (env.scb == null)
+            `uvm_fatal("ENV_SCB", "scoreboard must be enabled")
+        if (env.scb.unexpected != 0 || env.scb.mismatched != 0 ||
+            env.scb.timed_out != 0 || env.scb.pending_requests.num() != 0 ||
+            env.scb.cpl_trackers.num() != 0)
+            `uvm_error("ENV_SCB", $sformatf(
+                "unexpected=%0d mismatched=%0d timed_out=%0d pending=%0d trackers=%0d",
+                env.scb.unexpected, env.scb.mismatched, env.scb.timed_out,
+                env.scb.pending_requests.num(), env.scb.cpl_trackers.num()))
+    endfunction
 endclass

@@ -257,7 +257,7 @@ adapter，适合双 BFM 自测；绑定一个真实 DUT 时必须关闭 DUT 对�
 | DUT 用户逻辑，VIP 模拟 HIP | `HARD_IP` | 按 DUT 的 PCIe 角色选 RC 或 EP |
 | DUT 真实 HIP，VIP 模拟用户逻辑 | `APPLICATION` | 按 HIP 的 PCIe 角色选 RC 或 EP |
 
-下面是 DUT 为 RC 用户应用、VIP 模拟 HARD_IP 的最小配置：
+下面是 DUT 为 EP 用户应用、VIP 模拟 HARD_IP 并承担对端 RC 协议角色的最小配置：
 
 ```systemverilog
 `include "uvm_macros.svh"
@@ -281,12 +281,12 @@ class my_app_dut_test extends uvm_test;
     super.build_phase(phase);
     cfg = pcie_tl_env_config::type_id::create("cfg");
     cfg.rc_agent_enable = 1;
-    cfg.ep_agent_enable = 0;       // DUT 是用户侧逻辑，HIP 由 VIP 模拟
+    cfg.ep_agent_enable = 0;       // EP 用户逻辑由 DUT 实现，VIP 只创建 RC agent
     cfg.num_rc = 1;
     cfg.num_ep = 0;
     cfg.ep_auto_response = 0;
     cfg.use_unified_mem = 1;
-    cfg.scb_enable = 0;            // 引脚桥接场景用 monitor/sequence 自检
+    cfg.scb_enable = 1;            // 需要包含 bridge SCB 修复的 pcie_work
     host_mem = new("host_mem");
     host_mem.set_host_id(0);
     if (!cfg.bind_host_memory(0, 0, host_mem, why))
@@ -301,7 +301,7 @@ endclass
 此时 bind 参数使用 `.ADAPTER_PATH("uvm_test_top.env.rc_adapter_0")` 和
 `.SIDE("HARD_IP")`。RC sequence 通过 `env.rc_agent.sequencer` 发起事务；DUT
 发出的 DMA 请求由 RC monitor 观察并交给 `rc_driver`/`host_mem` 响应。
-若 DUT 用户逻辑是 EP，则把同样的 `HARD_IP` 绑定到 `ep_adapter`，关闭 RC agent
+若 DUT 用户逻辑是 RC，则把同样的 `HARD_IP` 绑定到 `ep_adapter`，关闭 RC agent
 并打开 EP agent；协议角色变化不会改变 `SIDE` 的引脚所有权。
 
 例如 DUT 是 PCIe EP HIP、VIP 模拟用户应用时，只打开 EP agent：
@@ -327,6 +327,45 @@ HIP 发来的请求由 EP monitor 交给 EP driver，并由 `dev_mem_0` 完成�
 RC↔EP 的 TLM loopback，adapter 的 monitor/driver 直接在 Intel 用户侧接口上完成
 发送和接收。不要在同一条总线上同时创建另一套 RC/EP adapter，也不要把 bind wrapper
 再接到 `tests/intel_pcie_env_test.sv` 的双 BFM 总线上；后者是独立的双端自测示例。
+
+### 开启 SCB
+
+`pcie_tl_env_config` 中 `scb_enable=1`、`scb_strict_check=1` 均为默认值。
+下例显式写 `scb_enable=1` 是为了说明集成意图；如果旧 test 或大 cfg 中曾设为 0，
+仍需移除该覆盖或改回 1。`intel_pcie_configure_env()` 不修改这个开关。
+
+bridge 模式下，公共 driver 在分配最终 Tag、完成编码后，通过 `tx_ap` 同步发布
+事务，再调用 `adapter.send()`。env 自动连接 SCB 的 `pending_imp`，预先登记需要
+Completion 的请求；返回的 Completion 按 `{Requester ID, Tag}` 查找请求。
+预登记保存请求快照，不增加业务计数，也不会让解码后的副本覆盖发送端的期望状态。
+
+单 RC 或单 EP 接外部 DUT 时，env 还用发送观察补足缺少的对端 monitor，包括
+posted write 和本地 responder 发出的 Completion。双 BFM 环境继续用接收 monitor
+计数和检查，避免 TX/RX 重复计算。上层 test 不需要手动调用 `register_pending()`。
+
+嵌套大环境仍按原来的路径创建，修改配置即可：
+
+```systemverilog
+// 在大 env 的 build_phase 中，cfg.pcie_cfg 已完成角色和内存配置。
+cfg.pcie_cfg.scb_enable = 1;
+intel_pcie_configure_env(this, cfg.pcie_cfg, "pcie_env");
+pcie_env = pcie_tl_env::type_id::create("pcie_env", this);
+// bind 的 ADAPTER_PATH 对应 uvm_test_top.env.pcie_env.rc_adapter_0。
+```
+
+这项修复位于依赖仓库 `pcie_work/pcie_tl_vip` 的
+`src/agent/pcie_tl_base_driver.sv`、`src/env/pcie_tl_env.sv` 和
+`src/env/pcie_tl_scoreboard.sv`。必须更新这三个文件并重新编译公共 package；
+只更新 Intel bind 文件无法修复旧环境的 `Unexpected Completion`。
+自定义测试若直接索引 SCB 表，应改用 `scb.request_key(tlp)`，不能继续只用 Tag。
+
+本轮配套的公共库版本为
+[`pcie_work` main 的 `a8fff69`](https://github.com/Beihang-yuting/pcie_work/commit/a8fff69)，
+包含 bridge SCB 修复及 TLP 错误注入字段的 soft 0 默认值。
+
+目前单侧观察补足支持直连及观察完整的 root。同一 switch root 混合真实 DUT EP
+和带 monitor 的 BFM EP 时，仍需要按 TLP 路由选择观察点。SCB 的写数据参考表
+仍只按地址索引；Host/Device 同地址的独立存储域尚未在该表中隔离。
 
 ## 编译
 
@@ -372,5 +411,18 @@ vcs -full64 -sverilog -ntb_opts uvm-1.2 -timescale=1ns/1ps \
 ./simv_bind_env +UVM_TESTNAME=intel_pcie_env_max_boundary_test
 ```
 
-上述 env 测试也会实际创建一个 env 之外的公共 adapter，确认初始化入口没有替换其他
+上述三项现在均打开 SCB，检查匹配数、异常计数和 pending/分片表清空。要验证单侧
+接入路径，用两个独立 env（各持 RC 或 EP）运行：
+
+```bash
+vcs -full64 -sverilog -ntb_opts uvm-1.2 -timescale=1ns/1ps \
+  -top tb_intel_pcie_bind_split_env -f $INTEL_PCIE_ROOT/sim/filelist_bind_env.f \
+  -o simv_bind_split
+./simv_bind_split +UVM_TESTNAME=intel_pcie_env_split_test
+```
+
+该测试通过同一套 bind wire 网络运行双向非对齐读写；两个独立 TagManager 使用
+相同 Tag、不同 Requester ID，每个 SCB 都必须匹配两笔读请求并排空跟踪状态。
+
+`intel_pcie_env_test` 及其 stress/boundary 派生测试还会实际创建一个 env 之外的公共 adapter，确认初始化入口没有替换其他
 环境的 adapter。绑定自测不包含真实 DUT；真实 DUT 接入时只保留与它相连的一端 VIP。

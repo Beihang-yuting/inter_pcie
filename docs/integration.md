@@ -72,7 +72,7 @@ if (!env_cfg.bind_host_memory(0, 0, host_manager, why))
 uvm_config_db#(host_mem_api)::set(this, "env", "dev_mem_0", device_manager);
 ```
 
-集成回归设置 `ep_auto_response=1`、`use_unified_mem=1`，用 `pcie_tl_rw_seq` 完成RC→EP和EP→Host的137-byte非对齐写读。该测试关闭公共scoreboard：其pending注册路径属于TLM通路，当前引脚桥不补写该内部状态；测试逐字节检查读回结果。接项目自有scoreboard时，应通过公共monitor/adapter analysis port接入真实观测结果。
+集成回归设置 `ep_auto_response=1`、`use_unified_mem=1`、`scb_enable=1`，用 `pcie_tl_rw_seq` 完成RC→EP和EP→Host的137-byte非对齐写读。更新后的 `pcie_work` 在 driver 发送前为 bridge 通路登记 SCB pending，并按 `{Requester ID, Tag}` 匹配 Completion；测试同时检查逐字节读回、精确计数和 pending 清空。需要同步更新公共 driver/env/scoreboard 并重新编译，详见 [bind 集成的 SCB 说明](integration/bind.md#开启-scb)。接项目自有scoreboard时，仍通过公共monitor/adapter analysis port接入真实观测结果。
 
 ## 配置与调用约定
 

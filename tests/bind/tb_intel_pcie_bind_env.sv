@@ -1,11 +1,15 @@
 // tests/bind：完整 pcie_tl_env 的引脚绑定回归，依赖产品 wrapper 与现有 env 测试。
 // fixture 仅拥有解析型网络、时钟和复位；两个 wrapper 分别承担 HARD_IP/APPLICATION，
-// adapter 均由同一个 pcie_tl_env 创建。业务数据只能经过 wrapper/net，不能直接共享 vif。
+// 默认顶层的 adapter 来自同一 env，split 顶层分别来自两个单侧 env。
+// 业务数据只能经过 wrapper/net，不能直接共享 vif。
 // 与真实 DUT 集成时由 DUT 替换其中一端；本 fixture 不代表 Quartus 硬核模型。
 `include "intel_pcie_params.svh"
 
 // 两个独立 interface 通过下列网络连接，验证分段数据、credit/ACK 的双向映射。
-module intel_pcie_bind_env_link;
+module intel_pcie_bind_env_link #(
+  parameter string	RC_ADAPTER_PATH = "uvm_test_top.env.rc_adapter_0",
+  parameter string	EP_ADAPTER_PATH = "uvm_test_top.env.ep_adapter"
+);
   timeunit 1ns;
   timeprecision 1ps;
   localparam int DATA_WIDTH = `INTEL_PCIE_DATA_WIDTH;
@@ -68,12 +72,12 @@ module intel_pcie_bind_env_link;
 endmodule
 
 bind intel_pcie_bind_env_link intel_pcie_bind_wrapper_inout #(
-  .ADAPTER_PATH("uvm_test_top.env.rc_adapter_0"),
+  .ADAPTER_PATH(RC_ADAPTER_PATH),
   .SIDE("HARD_IP")
 ) hard_bind (.*);
 
 bind intel_pcie_bind_env_link intel_pcie_bind_wrapper_inout #(
-  .ADAPTER_PATH("uvm_test_top.env.ep_adapter"),
+  .ADAPTER_PATH(EP_ADAPTER_PATH),
   .SIDE("APPLICATION")
 ) application_bind (.*);
 
@@ -97,5 +101,32 @@ module tb_intel_pcie_bind_env;
   initial begin
     #1ms;
     $fatal(1, "bind env watchdog expired");
+  end
+endmodule
+
+// 两个独立环境各持一端；复用同一 wire fixture，端口发布到不同 UVM 子树。
+// 必须用 -top tb_intel_pcie_bind_split_env 单独编译，避免同时启动两个 run_test。
+module tb_intel_pcie_bind_split_env;
+  timeunit 1ns;
+  timeprecision 1ps;
+  import uvm_pkg::*;
+  import intel_pcie_tests_pkg::*;
+
+  intel_pcie_bind_env_link #(
+    .RC_ADAPTER_PATH("uvm_test_top.env.rc_adapter_0"),
+    .EP_ADAPTER_PATH("uvm_test_top.peer_env.ep_adapter")
+  ) link();
+
+  initial begin
+    #0;
+    link.hard_bind.cfg.check_parity = 1;
+    link.application_bind.cfg.check_parity = 1;
+    run_test();
+  end
+
+  // 读回或信用死锁必须显式失败，不能以阶段提前结束算通过。
+  initial begin
+    #1ms;
+    $fatal(1, "split bind env watchdog expired");
   end
 endmodule
