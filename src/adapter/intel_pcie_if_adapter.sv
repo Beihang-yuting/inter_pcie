@@ -27,6 +27,16 @@ class intel_pcie_if_adapter extends pcie_tl_if_adapter;
         super.new(name, parent);
     endfunction
 
+    // Intel adapter 使用专用 Avalon-ST virtual interface；不能让公共 env
+    // 通过基类 pcie_tl_if_adapter.vif 判断，否则即使 bind 成功也会误报。
+    virtual function bit native_vif_required();
+        return 1'b1;
+    endfunction
+
+    virtual function bit native_vif_bound();
+        return (avst_vif != null);
+    endfunction
+
     // 工厂覆盖与 Xilinx adapter 一致。默认 rc_adapter* 模拟硬核，ep_adapter*
     // 模拟应用；接真实 RP 用户 DUT 时必须通过 intel_cfg.side 显式指定方向。
     function void build_phase(uvm_phase phase);
@@ -42,7 +52,9 @@ class intel_pcie_if_adapter extends pcie_tl_if_adapter;
         end
         cfg.validate();
         if (!uvm_config_db#(intel_pcie_vif_t)::get(this, "", "vif", avst_vif))
-            `uvm_fatal("RTILE_VIF", "missing intel_pcie_if virtual interface")
+            `uvm_fatal("RTILE_VIF", $sformatf(
+                "missing intel_pcie_if virtual interface for adapter '%s'",
+                get_full_name()))
         mode = SV_IF_MODE;
         avst_codec = intel_pcie_avst_codec::type_id::create("avst_codec");
         avst_codec.header_big_endian = cfg.header_big_endian;
