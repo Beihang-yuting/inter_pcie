@@ -9,6 +9,7 @@
 - [手册 §4.3.1.3 / §4.3.1.4 的信号与时序总结](docs/r-tile-interface.md)
 - [接入方法、配置与边界](docs/integration.md)
 - [DUT bind 接入与信号映射](docs/integration/bind.md)
+- [AIP reg_acc 寄存器访问（4/8/12/16 字节）](docs/integration/reg_acc.md)
 - [设计规格](docs/superpowers/specs/2026-10-29-intel-r-tile-adapter-design.md)
 - [验证记录](docs/validation.md)
 
